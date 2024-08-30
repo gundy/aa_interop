@@ -1,0 +1,15 @@
+# https://editorconfig.org
+
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+
+[*.{c,py,grc,md}]
+charset = utf-8
+
+# 4 space indentation
+[*.{c.py}]
+indent_style = space
+indent_size = 4
