@@ -1,5 +1,12 @@
 import socket
 import re
+import argparse
+import time
+try:
+    import serial
+except ImportError:
+    print("Unable to import serial library, serial support will not work. Please install pyserial.")
+
 
 # This file decodes a TCP stream that's connected via an RS452 ethernet adapter connected to the RS422 bus on an Advantage Air
 # controller.  Not every message is processed, CRCs are ignored, and bus acks/naks etc are essentially ignored also, this
@@ -8,6 +15,12 @@ import re
 # There are probably many errors!
 # Usage: Edit the ip in main() to suit your environment
 # This code could be trivially changed to support a usb serial adapter
+
+# Note: to use the pyserial support:
+
+# python3 -m venv .venv
+# source .venv/bin/activate
+# python3 -m pip install pyserial
 
 def decode_aircon_error(data: str):
     if len(data) < 14:
@@ -320,18 +333,13 @@ def parse_u_message(message):
         print(f"{message_type} unit:{unit_id} from:{origin_name} register:{register_id}:{description} {decoded_data}  ")
         #print(f"Parsed CAN Message: {parsed_message}")
 
-
-def main():
-    ip = "192.168.1.2"
-    port = 10002
+def process_data(readfn, closefn):
+    print("Listening for incoming data ... ")
     buffer = b""  # Use bytes instead of string
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((ip, port))
 
     try:
         while True:
-            data = sock.recv(1024)  # Read raw bytes from the socket
+            data = readfn(1024)
             if data:
                 buffer += data
                 # Find and parse all <U>...</U=...> messages
@@ -341,11 +349,38 @@ def main():
                 # Clean up the buffer by removing parsed messages
                 buffer = re.sub(rb'<U>(.*?)</U=[0-9a-fA-F]{2}>', b'', buffer)
             else:
-                break
+                time.sleep(0.1)
     except KeyboardInterrupt:
         print("User interrupted the connection.")
     finally:
-        sock.close()
+        closefn()
+
+def network_loop(ip,port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((ip, port))
+    process_data(sock.recv, sock.close)
+
+def serial_loop(device):
+    serial_port = serial.Serial(port=device[0], baudrate=57600, timeout=0)
+    process_data(serial_port.read, serial_port.close)
+
+def main(args):
+    if args.interface == "ethernet":
+        network_loop(args.ip, args.port)
+    else:
+        serial_loop(args.device)
+
+
+parser = argparse.ArgumentParser(description='Monitor communications between AA Tablet and Control Box')
+parser.add_argument('--interface', type=str, nargs=1, default="network", help="serial, network (default)", required=True)
+parser.add_argument('--ip', type=str, nargs=1, default="192.168.1.2", required=False,
+                    help='ip address to connect to when using network interface (default 192.168.1.2)')
+parser.add_argument('--port', type=int, nargs=1, default="10002", required=False, 
+                    help='ip address to connect to when using network interface (default 10002)')
+parser.add_argument('--device', type=str, nargs=1, required=False,
+                    help='serial device to use when using serial interface (eg. /dev/cu.usbserial)')
+args = parser.parse_args()
 
 if __name__ == "__main__":
-    main()
+    main(args)
+
