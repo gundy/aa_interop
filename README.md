@@ -14,6 +14,7 @@ The documentation is split into sections:
 
 * Tablet to Control Box communications: [`docs/cb_tablet_comms/README.md`](./docs/cb_tablet_comms/README.md),  
 * RF Temperature Sensor communications: [`docs/rf_temp_sensors/README.md`](./docs/rf_temp_sensors/README.md), including GNU Radio flow graph for monitoring sensor output.
+* HTTP API exposed by the tablet for controlling the system: [`docs/tablet_api/README.md`](./docs/tablet_api/README.md).
 
 # Limitations
 
