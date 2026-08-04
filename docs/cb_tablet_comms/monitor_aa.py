@@ -32,6 +32,8 @@ def decode_aircon_error(data: str):
 
     # Convert hex-encoded error code to ASCII string
     error_code_str = bytes.fromhex(error_code).decode('ascii')
+    # Trim trailing nulls / spaces (payload is 5 chars, codes are shorter)
+    error_code_str = error_code_str.rstrip('\x00').rstrip()
 
     # Lookup table for known error codes
     error_descriptions = {
@@ -55,20 +57,12 @@ def decode_aircon_error(data: str):
         "Reserved": reserved
     }
 
-def decode_set_uid(data: str):
-    if len(data) < 12:  # Ensure there is enough data to process
-        return "Incomplete Set UID data"
-
-    # Extract the UID, which is the first 3 bytes (6 hex digits)
-    unit_uid = data[0:6]
-
-    # The remaining bytes (if any) are typically zeros, so we will capture them for completeness
-    additional_data = data[6:]
-
+def decode_unit_announcement(data: str):
+    # Register 0a (JZ24): all-zero payload. The unit id lives in the record
+    # header (chars 4-9); the payload carries nothing further.
     return {
-        "orig": data,
-        "Unit UID": unit_uid,
-        "Additional Data": additional_data  # This is typically zeros but included for completeness
+        "Payload": data,
+        "Note": "Unit announcement (JZ24): the unit id is the record header"
     }
 
 
@@ -105,11 +99,13 @@ def decode_zone_config_cb(data: str):
     }
 
 def decode_unit_type(data: str):
-    if len(data) < 6:
+    if len(data) < 8:
         return "Incomplete Unit Type / Activation Status data"
 
     unit_type = int(data[0:2], 16)
     activation_status = int(data[2:4], 16)
+    dict_fw_major = int(data[4:6], 16)
+    dict_fw_minor = int(data[6:8], 16)
 
     unit_type_map = {
         0x11: "Daikin",
@@ -120,13 +116,15 @@ def decode_unit_type(data: str):
 
     activation_status_map = {
         0: "No Code",
-        1: "Expired",
-        2: "Code Enabled"
+        1: "Code Enabled",
+        2: "Expired"
     }
 
     return {
         "Unit Type": unit_type_map.get(unit_type, f"Unknown (0x{unit_type:02X})"),
-        "Activation Status": activation_status_map.get(activation_status, f"Unknown ({activation_status})")
+        "Activation Status": activation_status_map.get(activation_status, f"Unknown ({activation_status})"),
+        "Dictionary FW Major": dict_fw_major,
+        "Dictionary FW Minor": dict_fw_minor
     }
 
 def decode_zone_state(data: str):
@@ -199,21 +197,24 @@ def decode_zone_config_jz13(data: str):
 def decode_system_status(data):
     if len(data) >= 14:
         system_state = 'On' if data[0:2] == '01' else 'Off'
-        mode_map = { '01': 'Cool', '02': 'Heat', '03': 'Vent', '04': 'Auto', '05': 'Dry', '06': 'MyAuto' }
+        mode_map = { '01': 'Cool', '02': 'Heat', '03': 'Vent', '04': 'Auto', '05': 'Dry', '06': 'MyAuto (tablet-only)' }
         fan_map = {'00': 'Off', '01': 'Low', '02': 'Medium', '03': 'High', '04': 'Auto', '05': 'AutoAA' }
+        fresh_air_map = {'00': 'None', '01': 'Off', '02': 'On'}
 
         mode = mode_map.get(data[2:4], 'Unknown')
         fan = fan_map.get(data[4:6], 'Unknown')
         set_temp = int(data[6:8], 16) / 2.0
-        myzone_id = data[8:10]
-        fresh_air_status = 'On' if data[10:12] == '01' else 'Off'
+        myzone_id = int(data[8:10], 16)
+        fresh_air_status = fresh_air_map.get(data[10:12], 'Unknown')
+        rf_sys_id = int(data[12:14], 16)
         return {
             "System State": system_state,
             "Mode": mode,
             "Fan": fan,
             "Set Temp (°C)": set_temp,
             "MyZone ID": myzone_id,
-            "Fresh Air Status": fresh_air_status
+            "Fresh Air Status": fresh_air_status,
+            "RF Sys ID": rf_sys_id
         }
     else:
         return "Incomplete System Status data"
@@ -226,12 +227,78 @@ def decode_firmware_status(data: str):
     fw_minor = int(data[2:4], 16)
     cb_type = int(data[4:6], 16)
     rf_fw_major = int(data[6:8], 16)
+    cb_type_map = {
+        3: "Aircon-only CB",
+        4: "Split-type system (RF-connected, unit type 08)",
+        5: "Split-type system (RF-connected, unit type 08)"
+    }
     # Assuming bytes 8-14 are reserved/ignored
     return {
         "Firmware Major": fw_major,
         "Firmware Minor": fw_minor,
-        "Control Box Type": cb_type,
+        "Control Box Type": cb_type_map.get(cb_type, f"Unknown ({cb_type})"),
         "RF Firmware Major": rf_fw_major
+    }
+
+def decode_firmware_ack(data: str):
+    # Register 07 (JZ18): tablet -> CB response to every register-06 firmware
+    # announcement. Payload is always all-zero.
+    return {
+        "Payload": data,
+        "Note": "Firmware acknowledgement (JZ18); all-zero payload expected"
+    }
+
+def decode_activation_code(data: str):
+    if len(data) < 8:
+        return "Incomplete Activation Code data"
+    action_map = {1: "Set new code", 2: "Unlock"}
+    action = int(data[0:2], 16)
+    code_hi = data[2:4]
+    code_lo = data[4:6]
+    days = int(data[6:8], 16)
+    return {
+        "Action": action_map.get(action, f"Unknown ({action})"),
+        "Unlock Code (hi)": code_hi,
+        "Unlock Code (lo)": code_lo,
+        "Activation Time (days)": days
+    }
+
+def decode_sensor_pairing(data: str):
+    if len(data) < 14:
+        return "Incomplete Sensor Pairing data"
+    sensor_uid = data[0:6]
+    info = int(data[6:8], 16)
+    direction = "CB->Tab (JZ33 notification)" if (info & 0x40) else "Tab->CB (JZ32 attach)"
+    if direction == "Tab->CB (JZ32 attach)":
+        return {
+            "Direction": direction,
+            "Sensor UID": sensor_uid,
+            "Zone": int(data[6:8], 16)
+        }
+    return {
+        "Direction": direction,
+        "Sensor UID": sensor_uid,
+        "Info Byte": data[6:8],
+        "Pair Bit": bool(info & 0x40),
+        "Sensor Rev": data[8:10]
+    }
+
+def decode_rf_device_pairing(data: str):
+    if len(data) < 6:
+        return "Incomplete RF Device Pairing data"
+    return {
+        "Pairing Control": int(data[0:2], 16),
+        "RF Device Type": int(data[2:4], 16),
+        "Zone Channel": int(data[4:6], 16)
+    }
+
+def decode_rf_device_calibration(data: str):
+    if len(data) < 6:
+        return "Incomplete RF Device Calibration data"
+    return {
+        "Calibration Control": int(data[0:2], 16),
+        "Channel": int(data[2:4], 16),
+        "Up/Down Position": int(data[4:6], 16)
     }
 
 def decode_register(register_id, data):
@@ -242,12 +309,14 @@ def decode_register(register_id, data):
         '04': 'Zone Cfg    ',
         '05': 'Sys Status  ',
         '06': 'FW Vers     ',
-        '07': 'Tablet?     ',
+        '07': 'FW Ack JZ18 ',
         '08': 'AC Error    ',
         '09': 'Activation  ',
         '12': 'Sensor Pair ',
         '13': 'Info Byte   ',
-        '0a': 'UID         '
+        '0a': 'UID (JZ24)  ',
+        '26': 'RF Pairing  ',
+        '27': 'RF Calibrat '
     }
 
     description = descriptions.get(register_id, 'Unknown     ')
@@ -265,10 +334,20 @@ def decode_register(register_id, data):
     elif register_id == '06':
     # Skipping the locking stuff because don't want to play there
         return description, decode_firmware_status(data)
+    elif register_id == '07':
+        return description, decode_firmware_ack(data)
     elif register_id == '08':
         return description, decode_aircon_error(data)
+    elif register_id == '09':
+        return description, decode_activation_code(data)
     elif register_id == '0a':
-        return description, decode_set_uid(data)
+        return description, decode_unit_announcement(data)
+    elif register_id == '12':
+        return description, decode_sensor_pairing(data)
+    elif register_id == '26':
+        return description, decode_rf_device_pairing(data)
+    elif register_id == '27':
+        return description, decode_rf_device_calibration(data)
     # Add more decoding based on register_id
 
     return description, data  # Default return if not specifically handled
@@ -296,7 +375,8 @@ def parse_u_message(message):
 
     origin_map = {
         "01": "Tablet",
-        "03": "CB    "
+        "03": "CB    ",
+        "04": "CB?   "
     }
 
     # Extract the CAN frames
@@ -313,13 +393,19 @@ def parse_u_message(message):
         # Split CAN message components based on the protocol description
         unit_type = can_data[0:2]  # First two characters: unit type
         origin_dest = can_data[2:4]  # Next two characters: origin/destination
-        origin_name = origin_map.get(origin_dest,origin_dest)
+        origin_name = origin_map.get(origin_dest, origin_dest)
         unit_id = can_data[4:9]  # Next five characters: unit ID
         register_id = can_data[9:11]  # Next two characters: register ID
         data = can_data[11:]  # The remaining characters: data
 
         # Decode the register data based on the register ID
         description, decoded_data = decode_register(register_id, data)
+
+        unit_type_name = {
+            "02": "lights",
+            "07": "aircon (wired)",
+            "08": "aircon (RF/split) or RF device"
+        }.get(unit_type, unit_type)
 
         parsed_message = {
             'type': message_type,
@@ -330,7 +416,7 @@ def parse_u_message(message):
             'data': decoded_data,
             'description': description
         }
-        print(f"{message_type} unit:{unit_id} from:{origin_name} register:{register_id}:{description} {decoded_data}  ")
+        print(f"{message_type} unit:{unit_id} type:{unit_type_name} from:{origin_name} register:{register_id}:{description} {decoded_data}  ")
         #print(f"Parsed CAN Message: {parsed_message}")
 
 def process_data(readfn, closefn):

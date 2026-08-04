@@ -66,3 +66,20 @@ The command-line used was:
 
 A python implementation of this algorithm is available in the `aa_crc16.py` file.
 
+
+# CAN-side flow (radio packet → register traffic)
+
+Once the CB radio decodes a sensor packet it relays the information over the
+RS-485 link as CAN register traffic (see `../cb_tablet_comms/spec/`):
+
+| Stage | Wire traffic |
+| --- | --- |
+| Sensor detected (pair bit set) | CB → tablet register `12` (JZ33): `[sensor UID 3 bytes][info byte, bit 6 = pairing][sensor rev]` |
+| Tablet attaches sensor to zone | Tablet → CB register `12` (JZ32): `[sensor UID 3 bytes][zone]` |
+| Zone temperature updates | CB → tablet register `03` (JZ11) zone state records with measured temperature populated |
+| RF device registration | Tablet → CB register `26` (JZ55): `[pairing control][RF device type][zone channel]` |
+| RF device calibration | Tablet → CB register `27` (JZ57): `[calibration control][channel][up/down position]` |
+
+The sensor UID on the radio packet (e.g. `01613d`) appears unchanged in the
+register-12 payloads. Zone state only reports measured temperature after a
+sensor is attached to the zone via register `12`.

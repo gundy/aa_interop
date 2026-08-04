@@ -139,3 +139,70 @@ GET http://10.0.0.10:2025/setAircon?json={"aircons": { "ac2": { "zones" : { "z08
 ```sh
 GET http://10.0.0.10:2025/setAircon?json={"aircons": { "ac1": { "zones" : { "z01": { "setTemp": 22 } } } } }
 ```
+
+---
+
+# Appendix: mapping to the wire protocol
+
+This section cross-references the HTTP API against the RS-485 protocol
+documented in [`../cb_tablet_comms/`](cb_tablet_comms/).
+
+## Response codes
+
+API responses use a small integer status. The exact semantics of the values
+are inferred from reference implementations and are **not verified against a
+live system**:
+
+| Code | Meaning (inferred) |
+| --- | --- |
+| 1 | Success / OK |
+| 2 | Success (alternate ack path) |
+| 3 | Error / failure |
+
+## Request → register mapping
+
+The `setAircon` JSON body is translated into register writes before it
+reaches the control box:
+
+| JSON field | Register write |
+| --- | --- |
+| `info.state` (`on`/`off`) | register 05 byte 0 (system status) |
+| `info.mode` | register 05 byte 1 |
+| `info.fan` | register 05 byte 2 |
+| `info.setTemp` (float °C) | register 05 byte 3 (× 2) |
+| `info.myZone` | register 05 byte 4 |
+| `info.freshAir` | register 05 byte 5 |
+| `zones.<z>.state` (`open`/`close`) | register 03 byte 1 bit 7 (zone state) |
+| `zones.<z>.value` (0–100) | register 03 byte 1 bits 6–0 |
+| `zones.<z>.setTemp` (float °C) | register 03 byte 3 (× 2) |
+
+Sparse JSON payloads are merged over the current register state; absent
+fields are left untouched.
+
+## Read data → register mapping
+
+| API field | Register source |
+| --- | --- |
+| `info.state` / `mode` / `fan` / `setTemp` / `myZone` / `freshAirStatus` | register 05 |
+| `info.constant1..3` / `numberOfZones` | register 01 |
+| `info.cbType` | register 06 |
+| `info.airConErrorCode` | register 08 |
+| `zones.<z>.state` / `value` / `setTemp` / `type` / `measuredTemp` | register 03 / 04 |
+| `zones.<z>.minDamper` / `maxDamper` / `motion` / `rssi` | register 04 |
+
+## XML command forms
+
+Some API functions map to command-channel strings rather than registers:
+
+| API call | Command |
+| --- | --- |
+| Set mode | `setSystemData?mode=<1-6>` |
+| Turn system on | `setSystemData?airconOnOff=1` |
+| Zone open/close | `setZoneData?zone=N&zoneSetting=0\|1` |
+| Rename zone | `setZoneData?zone=N&name=…` |
+| Zone timer | `setZoneTimer?startTimeHours=…&startTimeMinutes=…&endTimeHours=…&endTimeMinutes=…&scheduleStatus=…` |
+| Schedule | `setScheduleData?schedule=N&day=&startHours=…&startMinutes=…&endHours=…&endMinutes=…&scheduleStatus=…&zoneStatus=…&zones=…` |
+| Activation code | `setActivation?json=…` |
+
+See `../cb_tablet_comms/spec/05-commands.md` for the command catalog and XML
+reply schemas.
